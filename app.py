@@ -367,8 +367,11 @@ st.markdown(
 # Yasin audio
 # ----------------------------------------------------------------------------
 if YASIN_MP3.exists():
-    st.markdown('<div class="section-title">🎧 سورة يس — استمع أثناء القراءة</div>', unsafe_allow_html=True)
-    st.audio(str(YASIN_MP3), format="audio/mp3", loop=True)
+    st.markdown('<div class="section-title">🎧 سورة يس</div>', unsafe_allow_html=True)
+    # autoplay=True + loop=False: يبدأ تلقائيًا عند فتح الصفحة ويُقرأ مرة واحدة فقط.
+    # عناصر Streamlit لا يُعاد تشغيلها عند تفاعل المستخدم مع الصفحة، فلا تتكرر التلاوة.
+    st.audio(str(YASIN_MP3), format="audio/mp3", loop=False, autoplay=True)
+    st.caption("تبدأ التلاوة تلقائيًا — إن أوقفها متصفحك فاضغط ▶ للاستماع")
 
 # ----------------------------------------------------------------------------
 # Compute state from readings log

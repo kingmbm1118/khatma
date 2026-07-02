@@ -7,6 +7,9 @@
 import sqlite3
 from datetime import datetime, timezone
 from pathlib import Path
+import base64
+import json
+import shutil
 
 import streamlit as st
 
@@ -41,9 +44,9 @@ JUZ_NAMES = [
     "الأعراف",      # Juz 9
     "الأنفال",      # Juz 10
     "التوبة",       # Juz 11
-    "هود",          # Juz 12
-    "يوسف",         # Juz 13
-    "الحجر",        # Juz 14
+    "هود",           # Juz 12
+    "يوسف",          # Juz 13
+    "الحجر",         # Juz 14
     "الإسراء",      # Juz 15
     "الكهف",        # Juz 16
     "الأنبياء",     # Juz 17
@@ -54,7 +57,7 @@ JUZ_NAMES = [
     "الأحزاب",      # Juz 22
     "يس",           # Juz 23
     "الزمر",        # Juz 24
-    "فصلت",         # Juz 25
+    "فصلت",          # Juz 25
     "الأحقاف",      # Juz 26
     "الذاريات",     # Juz 27
     "المجادلة",     # Juz 28
@@ -91,6 +94,10 @@ st.set_page_config(
     page_icon="📖",
     layout="wide",
 )
+
+# Initialize Session State for interactive tracking
+if "selected_juz" not in st.session_state:
+    st.session_state["selected_juz"] = []
 
 # ----------------------------------------------------------------------------
 # Storage layer — readings log (many readers per juz)
@@ -181,14 +188,11 @@ def mark_done(reading_ids):
     load_readings.clear()
 
 
-
-
 # ----------------------------------------------------------------------------
 # Quran text (bundled locally: assets/quran.json — Uthmani script)
 # ----------------------------------------------------------------------------
 @st.cache_data(show_spinner=False)
 def load_quran():
-    import json
     with open(ASSETS / "quran.json", encoding="utf-8") as f:
         return json.load(f)
 
@@ -276,24 +280,37 @@ h1, h2, h3, .amiri { font-family: 'Amiri', serif !important; }
     background: rgba(244,236,214,0.08); border: 1px solid #d9b64a; color: #f4ecd6; font-size: 0.88rem;
 }
 
-/* ---------- juz grid ---------- */
-.juz-grid {
-    display: grid; grid-template-columns: repeat(auto-fill, minmax(158px, 1fr));
-    gap: 12px; direction: rtl; margin-top: 0.5rem;
+/* ---------- Custom Streamlit Button Grid Style ---------- */
+div[data-testid="stColumn"] div.stButton > button {
+    width: 100% !important;
+    min-height: 125px !important;
+    border-radius: 14px !important;
+    padding: 12px 10px !important;
+    display: flex !important;
+    flex-direction: column !important;
+    align-items: center !important;
+    justify-content: center !important;
+    gap: 4px !important;
+    white-space: pre-line !important;
+    line-height: 1.4 !important;
+    transition: all 0.25s ease !important;
+    box-sizing: border-box !important;
 }
-.juz-card {
-    border-radius: 14px; padding: 12px 10px; text-align: center; min-height: 122px;
-    display: flex; flex-direction: column; justify-content: center;
-}
-.juz-card .num { font-family:'Amiri',serif; font-size: 1.15rem; font-weight: 700; }
-.juz-card .jname { font-family:'Amiri',serif; font-size: 0.95rem; opacity: 0.85; margin-top: 2px;}
-.juz-card .reader { font-size: 0.82rem; margin-top: 6px; font-weight: 600; }
-.juz-card .badge { font-size: 0.74rem; margin-top: 4px; }
-.juz-needs { background: rgba(244,236,214,0.07); border: 1.5px dashed rgba(217,182,74,0.65); color: #f0d98a; }
-.juz-reading { background: rgba(217,182,74,0.12); border: 1.5px solid #d9b64a; color: #f4ecd6; }
-.juz-done { background: linear-gradient(160deg, #d9b64a, #b9932f); border: 1.5px solid #f0d98a; color: #1d2a17; }
 
-/* ---------- leaderboard ---------- */
+/* Base style for needs reading */
+div[data-testid="stColumn"] div.stButton > button {
+    background: rgba(244,236,214,0.07) !important;
+    border: 1.5px dashed rgba(217,182,74,0.65) !important;
+    color: #f0d98a !important;
+}
+div[data-testid="stColumn"] div.stButton > button:hover {
+    background: rgba(217,182,74,0.15) !important;
+    border-color: #e8ca6a !important;
+    color: #f4ecd6 !important;
+    transform: translateY(-2px);
+}
+
+/* Leaderboard */
 .board { margin-top: 8px; }
 .board-row {
     display:flex; align-items:center; gap:12px;
@@ -309,10 +326,11 @@ h1, h2, h3, .amiri { font-family: 'Amiri', serif !important; }
     font-family:'Amiri',serif; color: #d9b64a; font-size: 1.5rem;
     border-bottom: 1px solid rgba(217,182,74,0.35); padding-bottom: 6px; margin-top: 1.4rem;
 }
-div.stButton > button, div.stFormSubmitButton > button {
-    background: #d9b64a; color: #14301f; font-weight: 700; border: none; border-radius: 10px;
+div.stButton > button.st-emotion-cache-199v880, div.stFormSubmitButton > button {
+    background: #d9b64a !important; color: #14301f !important; font-weight: 700 !important; border: none !important; border-radius: 10px !important;
+    width: auto !important; min-height: auto !important; padding: 0.5rem 1.5rem !important;
 }
-div.stButton > button:hover, div.stFormSubmitButton > button:hover { background: #e8ca6a; color:#14301f; }
+div.stButton > button.st-emotion-cache-199v880:hover, div.stFormSubmitButton > button:hover { background: #e8ca6a !important; color:#14301f !important; }
 .stProgress > div > div > div > div { background-color: #d9b64a; }
 footer, #MainMenu { visibility: hidden; }
 
@@ -352,13 +370,6 @@ footer, #MainMenu { visibility: hidden; }
     .remaining-panel .head { font-size: 1.0rem; }
     .chip { font-size: 0.78rem; padding: 3px 9px; }
 
-    .juz-grid { grid-template-columns: repeat(2, 1fr); gap: 8px; }
-    .juz-card { min-height: 104px; padding: 9px 6px; }
-    .juz-card .num { font-size: 1.0rem; }
-    .juz-card .jname { font-size: 0.85rem; }
-    .juz-card .reader { font-size: 0.75rem; }
-    .juz-card .badge { font-size: 0.68rem; }
-
     .board-row { padding: 6px 10px; gap: 8px; }
     .board-row .rank { font-size: 1.0rem; width: 1.6rem; }
     .board-row .bname { font-size: 0.9rem; }
@@ -383,7 +394,6 @@ footer, #MainMenu { visibility: hidden; }
 st.markdown('<div class="hero"><div class="bismillah">﷽</div></div>', unsafe_allow_html=True)
 
 if MOTHER_IMG.exists():
-    import base64
     _img_b64 = base64.b64encode(MOTHER_IMG.read_bytes()).decode()
     st.markdown(
         f'<div class="photo-frame photo-hero" style="text-align:center;">'
@@ -406,11 +416,7 @@ st.markdown(
 )
 
 # ----------------------------------------------------------------------------
-# Yasin audio
-# ----------------------------------------------------------------------------
-# ----------------------------------------------------------------------------
-# Yasin — hidden background audio, plays once on page load
-# (served via Streamlit static serving so the page stays lightweight)
+# Yasin audio setup
 # ----------------------------------------------------------------------------
 def _ensure_static_audio():
     static_dst = APP_DIR / "static" / "yasin.mp3"
@@ -418,7 +424,6 @@ def _ensure_static_audio():
         return True
     if YASIN_MP3.exists():
         static_dst.parent.mkdir(exist_ok=True)
-        import shutil
         shutil.copy(YASIN_MP3, static_dst)
         return True
     return False
@@ -435,10 +440,10 @@ if _ensure_static_audio():
 # ----------------------------------------------------------------------------
 readings = load_readings()
 done_counts = {j: 0 for j in range(1, 31)}
-active_by_juz = {j: [] for j in range(1, 31)}          # names currently reading
+active_by_juz = {j: [] for j in range(1, 31)}  # names currently reading
 done_names_by_juz = {j: [] for j in range(1, 31)}
-active_rows = []                                        # readings with status='reading'
-scores = {}                                             # reader -> done count
+active_rows = []                               # readings with status='reading'
+scores = {}                                    # reader -> done count
 
 for r in readings:
     j = int(r["juz"])
@@ -461,7 +466,6 @@ readers_count = len({r["reader_name"] for r in readings})
 # ----------------------------------------------------------------------------
 # Progress, milestones, remaining
 # ----------------------------------------------------------------------------
-
 st.markdown(
     f"""
 <div class="stat-row">
@@ -497,16 +501,16 @@ elif remaining:
     st.markdown(f'<div class="remaining-panel"><div class="head">{head}</div>{chips}</div>', unsafe_allow_html=True)
 
 # ----------------------------------------------------------------------------
-# Juz grid
+# Interactive Juz Grid (Clickable Native Buttons Styled via CSS Injection)
 # ----------------------------------------------------------------------------
-st.markdown('<div class="section-title">📖 الأجزاء الثلاثون</div>', unsafe_allow_html=True)
+st.markdown('<div class="section-title">📖 الأجزاء الثلاثون (انقر على الجزء مباشرة لاختياره وحجزه)</div>', unsafe_allow_html=True)
 st.markdown(
-    '<div style="color:#cfe3d6;font-size:0.95rem;">يمكن لأكثر من قارئ قراءة الجزء نفسه — كل قراءة تُحسب في الختمات القادمة بإذن الله</div>',
+    '<div style="color:#cfe3d6;font-size:0.95rem;margin-bottom:15px;">يمكن لأكثر من قارئ قراءة الجزء نفسه — اضغط على الجزء وسيتم تحديده تلقائيًا في الأسفل لتأكيد الحجز 👇</div>',
     unsafe_allow_html=True,
 )
 
 
-def names_snippet(names, limit=2):
+def names_snippet(names, limit=1):
     if not names:
         return ""
     shown = "، ".join(names[:limit])
@@ -514,32 +518,33 @@ def names_snippet(names, limit=2):
     return shown + (f" +{ar_num(extra)}" if extra > 0 else "")
 
 
-cards = []
-for j in range(1, 31):
+# Create 6-column grid for standard wide layout (30 items fits cleanly into 5 rows)
+cols = st.columns(6)
+for index, j in enumerate(range(1, 31)):
     n_active = len(active_by_juz[j])
     n_done = done_counts[j]
+    
     if j in covered:
-        cls = "juz-done"
         badge = f"✓ تمّت {ar_num(n_done)} مرة" if n_done > 1 else "✓ تمّت القراءة"
         reader = names_snippet(done_names_by_juz[j])
     elif n_active > 0:
-        cls = "juz-reading"
-        badge = f"⏳ يقرؤه الآن {ar_num(n_active)}" if n_active > 1 else "⏳ جارٍ القراءة"
+        badge = f"⏳ يقرؤه {ar_num(n_active)}"
         reader = names_snippet(active_by_juz[j])
     else:
-        cls, badge, reader = "juz-needs", "⭐ يحتاج قارئًا", ""
-    cards.append(
-        f'<div class="juz-card {cls}">'
-        f'<div class="num">الجزء {ar_num(j)}</div>'
-        f'<div class="jname">{JUZ_NAMES[j-1]}</div>'
-        f'<div class="reader">{reader}</div>'
-        f'<div class="badge">{badge}</div>'
-        f"</div>"
-    )
-st.markdown(f'<div class="juz-grid">{"".join(cards)}</div>', unsafe_allow_html=True)
+        badge = "⭐ يحتاج قارئًا"
+        reader = "متاح"
+
+    # Multi-line formatted text injected into the native button structure
+    button_label = f"الجزء {ar_num(j)}\n{JUZ_NAMES[j-1]}\n({reader})\n{badge}"
+    
+    with cols[index % 6]:
+        if st.button(button_label, key=f"juz_click_{j}"):
+            if j not in st.session_state["selected_juz"]:
+                st.session_state["selected_juz"] = [j]
+                st.toast(f"📥 تم تحديد الجزء {ar_num(j)} بنجاح! اكتب اسمك بالأسفل لتأكيد البدء.", icon="📖")
 
 # ----------------------------------------------------------------------------
-# Actions
+# Actions Forms
 # ----------------------------------------------------------------------------
 col_a, col_b = st.columns(2)
 
@@ -553,19 +558,22 @@ def juz_pick_label(j):
     return f"الجزء {ar_num(j)} — {JUZ_NAMES[j-1]}" + (f"  ({'، '.join(tags)})" if tags else "")
 
 
-# needy ajza' first, to encourage completing the khatma
 pick_order = sorted(range(1, 31), key=lambda j: (j not in remaining, len(active_by_juz[j]) > 0, j))
 
 with col_a:
     st.markdown('<div class="section-title">✍️ ابدأ قراءة جزء</div>', unsafe_allow_html=True)
     with st.form("reserve_form", clear_on_submit=True):
         name = st.text_input("اسمك", placeholder="اكتب اسمك هنا")
+        
+        # Prefilled multiselect pulls directly from session_state when clicking a card above
         chosen = st.multiselect(
             "اختر جزءًا أو أكثر — الأجزاء التي تحتاج قارئًا تظهر أولًا ⭐",
             options=pick_order,
+            default=st.session_state["selected_juz"],
             format_func=juz_pick_label,
         )
         submitted = st.form_submit_button("ابدأ القراءة 🤲")
+        
     if submitted:
         if not name.strip():
             st.warning("من فضلك اكتب اسمك أولًا")
@@ -577,6 +585,8 @@ with col_a:
                 st.success(f"تقبّل الله منك يا {name.strip()} — بدأتَ قراءة: {'، '.join('الجزء ' + ar_num(x) for x in new)}")
             if skipped:
                 st.info(f"أنت تقرأ بالفعل: {'، '.join('الجزء ' + ar_num(x) for x in skipped)}")
+            # Clear storage state after form handling to avoid sticky loops
+            st.session_state["selected_juz"] = []
             st.rerun()
 
 with col_b:

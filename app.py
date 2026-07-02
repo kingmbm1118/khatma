@@ -461,7 +461,6 @@ readers_count = len({r["reader_name"] for r in readings})
 # ----------------------------------------------------------------------------
 # Progress, milestones, remaining
 # ----------------------------------------------------------------------------
-st.markdown(f'<div class="section-title">📿 الختمة {khatma_ordinal(current_no)} — تقدّمنا معًا</div>', unsafe_allow_html=True)
 
 st.markdown(
     f"""

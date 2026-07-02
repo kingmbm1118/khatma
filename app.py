@@ -1,20 +1,17 @@
 # -*- coding: utf-8 -*-
 """
-ختمة قرآن مبسطة — صدقة جارية على روح الحاجة رضا سعد على
-واجهة تفاعلية فائقة السهولة: اضغط على الجزء -> يفتح نافذة الحجز -> يعرض المصحف تلقائيًا.
+ختمة قرآن — صدقة جارية على روح الحاجة رضا سعد على
+يسمح بتعدد القرّاء للجزء الواحد، وعدّ الختمات تلقائيًا، مع لوحة شرف ومراحل إنجاز.
 """
 
 import sqlite3
 from datetime import datetime, timezone
 from pathlib import Path
-import base64
-import json
-import shutil
 
 import streamlit as st
 
 # ----------------------------------------------------------------------------
-# Configuration & Setup
+# Config
 # ----------------------------------------------------------------------------
 APP_DIR = Path(__file__).parent
 ASSETS = APP_DIR / "assets"
@@ -23,6 +20,7 @@ YASIN_MP3 = ASSETS / "yasin.mp3"
 
 
 def get_secret(key, default=""):
+    """st.secrets.get raises if no secrets.toml exists at all — make it safe."""
     try:
         return st.secrets.get(key, default)
     except Exception:
@@ -32,13 +30,15 @@ def get_secret(key, default=""):
 MOTHER_NAME = get_secret("MOTHER_NAME", "أمي")
 
 JUZ_NAMES = [
-    "الفاتحة", "1 البقرة", "2 البقرة", "آل عمران", "1 النساء", "2 النساء",
-    "المائدة", "الأنعام", "الأعراف", "الأنفال", "التوبة", "هود", "يوسف",
-    "الحجر", "الإسراء", "الكهف", "الأنبياء", "المؤمنون", "الفرقان", "النمل",
-    "العنكبوت", "الأحزاب", "يس", "الزمر", "فصلت", "الأحقاف", "الذاريات",
-    "المجادلة", "الملك", "النبأ"
+    "آلم", "سيقول", "تلك الرسل", "لن تنالوا", "والمحصنات",
+    "لا يحب الله", "وإذا سمعوا", "ولو أننا", "قال الملأ", "واعلموا",
+    "يعتذرون", "وما من دابة", "وما أبرئ", "ربما", "سبحان الذي",
+    "قال ألم", "اقترب للناس", "قد أفلح", "وقال الذين", "أمن خلق",
+    "اتل ما أوحي", "ومن يقنت", "وما لي", "فمن أظلم", "إليه يرد",
+    "حم", "قال فما خطبكم", "قد سمع الله", "تبارك الذي", "عم",
 ]
 
+# Madina mushaf (Hafs) juz boundaries: (start_surah, start_ayah, end_surah, end_ayah)
 JUZ_RANGES = [
     (1, 1, 2, 141), (2, 142, 2, 252), (2, 253, 3, 92), (3, 93, 4, 23), (4, 24, 4, 147),
     (4, 148, 5, 81), (5, 82, 6, 110), (6, 111, 7, 87), (7, 88, 8, 40), (8, 41, 9, 92),
@@ -50,8 +50,16 @@ JUZ_RANGES = [
 
 _AR_DIGITS = str.maketrans("0123456789", "٠١٢٣٤٥٦٧٨٩")
 
+ORDINALS_F = ["الأولى", "الثانية", "الثالثة", "الرابعة", "الخامسة",
+              "السادسة", "السابعة", "الثامنة", "التاسعة", "العاشرة"]
+
+
 def ar_num(n):
     return str(n).translate(_AR_DIGITS)
+
+
+def khatma_ordinal(n):
+    return ORDINALS_F[n - 1] if 1 <= n <= 10 else f"رقم {ar_num(n)}"
 
 
 st.set_page_config(
@@ -60,18 +68,17 @@ st.set_page_config(
     layout="wide",
 )
 
-# إدارة الحالة لتحديد الجزء المعروض تلقائياً في المصحف
-if "mushaf_juz" not in st.session_state:
-    st.session_state["mushaf_juz"] = 1
-
 # ----------------------------------------------------------------------------
-# Database Layer (SQLite / Supabase)
+# Storage layer — readings log (many readers per juz)
+# Supabase (persistent, for Streamlit Cloud) or SQLite (local testing)
 # ----------------------------------------------------------------------------
 USING_SUPABASE = bool(get_secret("SUPABASE_URL"))
+
 
 def _supabase_client():
     from supabase import create_client
     return create_client(get_secret("SUPABASE_URL"), get_secret("SUPABASE_KEY"))
+
 
 def _sqlite_conn():
     conn = sqlite3.connect(APP_DIR / "khatma.db")
@@ -88,11 +95,14 @@ def _sqlite_conn():
     conn.commit()
     return conn
 
+
 def _now():
     return datetime.now(timezone.utc).isoformat()
 
-@st.cache_data(ttl=2, show_spinner=False)
+
+@st.cache_data(ttl=5, show_spinner=False)
 def load_readings():
+    """Return list of {'id', 'juz', 'reader_name', 'status'}."""
     if USING_SUPABASE:
         sb = _supabase_client()
         return sb.table("readings").select("id, juz, reader_name, status").execute().data
@@ -101,36 +111,66 @@ def load_readings():
     conn.close()
     return [{"id": r[0], "juz": r[1], "reader_name": r[2], "status": r[3]} for r in rows]
 
-def add_reading(juz_no, name):
-    rows = [{"juz": juz_no, "reader_name": name, "status": "reading", "created_at": _now(), "updated_at": _now()}]
+
+def add_readings(juz_list, name):
+    """Start readings. Skips ajza' this same person is already actively reading."""
+    active_same = {
+        r["juz"] for r in load_readings()
+        if r["reader_name"] == name and r["status"] == "reading"
+    }
+    new = [j for j in juz_list if j not in active_same]
+    skipped = [j for j in juz_list if j in active_same]
+    if new:
+        rows = [
+            {"juz": j, "reader_name": name, "status": "reading",
+             "created_at": _now(), "updated_at": _now()}
+            for j in new
+        ]
+        if USING_SUPABASE:
+            _supabase_client().table("readings").insert(rows).execute()
+        else:
+            conn = _sqlite_conn()
+            conn.executemany(
+                "INSERT INTO readings (juz, reader_name, status, created_at, updated_at) "
+                "VALUES (:juz, :reader_name, :status, :created_at, :updated_at)",
+                rows,
+            )
+            conn.commit()
+            conn.close()
+    load_readings.clear()
+    return new, skipped
+
+
+def mark_done(reading_ids):
     if USING_SUPABASE:
-        _supabase_client().table("readings").insert(rows).execute()
+        sb = _supabase_client()
+        for rid in reading_ids:
+            sb.table("readings").update({"status": "done", "updated_at": _now()}).eq("id", rid).execute()
     else:
         conn = _sqlite_conn()
-        conn.execute("INSERT INTO readings (juz, reader_name, status, created_at, updated_at) VALUES (?, ?, 'reading', ?, ?)", (juz_no, name, _now(), _now()))
+        conn.executemany(
+            "UPDATE readings SET status='done', updated_at=? WHERE id=?",
+            [(_now(), rid) for rid in reading_ids],
+        )
         conn.commit()
         conn.close()
     load_readings.clear()
 
-def confirm_done(reading_id):
-    if USING_SUPABASE:
-        _supabase_client().table("readings").update({"status": "done", "updated_at": _now()}).eq("id", reading_id).execute()
-    else:
-        conn = _sqlite_conn()
-        conn.execute("UPDATE readings SET status='done', updated_at=? WHERE id=?", (_now(), reading_id))
-        conn.commit()
-        conn.close()
-    load_readings.clear()
+
+
 
 # ----------------------------------------------------------------------------
-# Quran Text Loader
+# Quran text (bundled locally: assets/quran.json — Uthmani script)
 # ----------------------------------------------------------------------------
 @st.cache_data(show_spinner=False)
 def load_quran():
+    import json
     with open(ASSETS / "quran.json", encoding="utf-8") as f:
         return json.load(f)
 
+
 BASMALA = "بِسۡمِ ٱللَّهِ ٱلرَّحۡمَٰنِ ٱلرَّحِيمِ"
+
 
 @st.cache_data(show_spinner=False)
 def render_juz_html(juz_no: int) -> str:
@@ -143,16 +183,22 @@ def render_juz_html(juz_no: int) -> str:
         end = a2 if s == s2 else surah["total_verses"]
         if start == 1:
             parts.append(f'<div class="surah-header">سُورَةُ {surah["name"]}</div>')
-            if s not in (1, 9):
+            if s not in (1, 9):  # Al-Fatiha's basmala is verse 1; At-Tawbah has none
                 parts.append(f'<div class="basmala">{BASMALA}</div>')
         else:
-            parts.append(f'<div class="surah-header cont">تكملة سُورَةِ {surah["name"]} — من الآية {ar_num(start)}</div>')
-        ayat = [f'{v["text"]} <span class="aya-num">﴿{ar_num(v["id"])}﴾</span>' for v in surah["verses"][start - 1 : end]]
+            parts.append(
+                f'<div class="surah-header cont">تكملة سُورَةِ {surah["name"]} — من الآية {ar_num(start)}</div>'
+            )
+        ayat = [
+            f'{v["text"]} <span class="aya-num">﴿{ar_num(v["id"])}﴾</span>'
+            for v in surah["verses"][start - 1 : end]
+        ]
         parts.append(f'<div class="quran-text">{" ".join(ayat)}</div>')
     return "".join(parts)
 
+
 # ----------------------------------------------------------------------------
-# Styles & Theme Injection
+# Styling
 # ----------------------------------------------------------------------------
 st.markdown(
     """
@@ -169,95 +215,230 @@ h1, h2, h3, .amiri { font-family: 'Amiri', serif !important; }
 .hero { text-align: center; padding: 1.4rem 1rem 0.6rem 1rem; color: #f4ecd6; }
 .hero .bismillah { font-family:'Amiri',serif; font-size: 2.0rem; color: #d9b64a; margin-bottom: 0.4rem; }
 .hero .title { font-family:'Amiri',serif; font-size: 2.4rem; font-weight: 700; color: #f4ecd6; }
-.hero .dua { font-family:'Amiri',serif; font-size: 1.25rem; color: #cfe3d6; max-width: 720px; margin: 0.6rem auto; line-height: 2.1; }
-.photo-frame img { border-radius: 50%; border: 4px solid #d9b64a; box-shadow: 0 0 40px rgba(217,182,74,0.35); }
+.hero .dua {
+    font-family:'Amiri',serif; font-size: 1.25rem; color: #cfe3d6;
+    max-width: 720px; margin: 0.6rem auto 0 auto; line-height: 2.1;
+}
+.photo-frame img {
+    border-radius: 50%; border: 4px solid #d9b64a;
+    box-shadow: 0 0 40px rgba(217,182,74,0.35);
+}
 
-/* ---------- Stats Boxes ---------- */
+/* ---------- stats row ---------- */
 .stat-row { display:flex; gap:12px; flex-wrap:wrap; justify-content:center; margin-top:8px; }
 .stat-box {
     background: rgba(244,236,214,0.06); border: 1px solid rgba(217,182,74,0.45);
-    border-radius: 14px; padding: 10px 22px; text-align:center; color:#f4ecd6; min-width: 130px;
+    border-radius: 14px; padding: 10px 22px; text-align:center; color:#f4ecd6;
+    min-width: 130px;
 }
 .stat-box .big { font-family:'Amiri',serif; font-size: 1.9rem; color:#d9b64a; font-weight:700; }
 .stat-box .lbl { font-size: 0.85rem; opacity: 0.9; }
 
-/* ---------- Grid Styling for Native Buttons ---------- */
-div[data-testid="stColumn"] div.stButton > button {
-    width: 100% !important;
-    min-height: 120px !important;
-    border-radius: 14px !important;
-    padding: 10px !important;
-    display: flex !important;
-    flex-direction: column !important;
-    align-items: center !important;
-    justify-content: center !important;
-    white-space: pre-line !important;
-    line-height: 1.4 !important;
-    transition: all 0.2s ease-in-out !important;
+/* ---------- milestones ---------- */
+.milestone-track { display:flex; gap:8px; justify-content:center; flex-wrap:wrap; margin: 10px 0 4px 0; }
+.milestone {
+    border-radius: 999px; padding: 5px 16px; font-size: 0.9rem; font-weight: 600;
+    border: 1.5px solid rgba(217,182,74,0.5); color: #d9c99a; background: rgba(244,236,214,0.05);
+}
+.milestone.hit { background: linear-gradient(160deg,#d9b64a,#b9932f); color: #1d2a17; border-color:#f0d98a; }
+
+.remaining-panel {
+    background: rgba(217,182,74,0.08); border: 1.5px dashed rgba(217,182,74,0.6);
+    border-radius: 14px; padding: 12px 16px; margin-top: 10px; text-align:center;
+}
+.remaining-panel .head { font-family:'Amiri',serif; color:#f0d98a; font-size:1.2rem; margin-bottom:6px; }
+.chip {
+    display:inline-block; margin: 3px; padding: 4px 12px; border-radius: 999px;
+    background: rgba(244,236,214,0.08); border: 1px solid #d9b64a; color: #f4ecd6; font-size: 0.88rem;
 }
 
-/* Custom button states overrides */
-.juz-btn-available > button { background: rgba(244,236,214,0.06) !important; border: 1.5px dashed rgba(217,182,74,0.6) !important; color: #f0d98a !important; }
-.juz-btn-reading > button { background: rgba(217,182,74,0.15) !important; border: 1.5px solid #d9b64a !important; color: #f4ecd6 !important; font-weight: bold !important;}
-.juz-btn-done > button { background: linear-gradient(160deg, #d9b64a, #b9932f) !important; border: 1.5px solid #f0d98a !important; color: #1d2a17 !important; font-weight: bold !important; }
+/* ---------- juz grid ---------- */
+.juz-grid {
+    display: grid; grid-template-columns: repeat(auto-fill, minmax(158px, 1fr));
+    gap: 12px; direction: rtl; margin-top: 0.5rem;
+}
+.juz-card {
+    border-radius: 14px; padding: 12px 10px; text-align: center; min-height: 122px;
+    display: flex; flex-direction: column; justify-content: center;
+}
+.juz-card .num { font-family:'Amiri',serif; font-size: 1.15rem; font-weight: 700; }
+.juz-card .jname { font-family:'Amiri',serif; font-size: 0.95rem; opacity: 0.85; margin-top: 2px;}
+.juz-card .reader { font-size: 0.82rem; margin-top: 6px; font-weight: 600; }
+.juz-card .badge { font-size: 0.74rem; margin-top: 4px; }
+.juz-needs { background: rgba(244,236,214,0.07); border: 1.5px dashed rgba(217,182,74,0.65); color: #f0d98a; }
+.juz-reading { background: rgba(217,182,74,0.12); border: 1.5px solid #d9b64a; color: #f4ecd6; }
+.juz-done { background: linear-gradient(160deg, #d9b64a, #b9932f); border: 1.5px solid #f0d98a; color: #1d2a17; }
 
-div[data-testid="stColumn"] div.stButton > button:hover { transform: translateY(-3px) !important; box-shadow: 0 4px 15px rgba(0,0,0,0.2) !important; }
+/* ---------- leaderboard ---------- */
+.board { margin-top: 8px; }
+.board-row {
+    display:flex; align-items:center; gap:12px;
+    background: rgba(244,236,214,0.06); border: 1px solid rgba(217,182,74,0.35);
+    border-radius: 12px; padding: 8px 16px; margin-bottom: 6px; color:#f4ecd6;
+}
+.board-row .rank { font-size: 1.2rem; width: 2rem; text-align:center; }
+.board-row .bname { font-weight: 700; flex-grow: 1; }
+.board-row .score { font-family:'Amiri',serif; color:#d9b64a; font-weight:700; }
+.board-row.top1 { border-color:#f0d98a; background: rgba(217,182,74,0.16); }
 
-.section-title { font-family:'Amiri',serif; color: #d9b64a; font-size: 1.6rem; border-bottom: 1px solid rgba(217,182,74,0.35); padding-bottom: 6px; margin-top: 1.8rem; }
+.section-title {
+    font-family:'Amiri',serif; color: #d9b64a; font-size: 1.5rem;
+    border-bottom: 1px solid rgba(217,182,74,0.35); padding-bottom: 6px; margin-top: 1.4rem;
+}
+div.stButton > button, div.stFormSubmitButton > button {
+    background: #d9b64a; color: #14301f; font-weight: 700; border: none; border-radius: 10px;
+}
+div.stButton > button:hover, div.stFormSubmitButton > button:hover { background: #e8ca6a; color:#14301f; }
+.stProgress > div > div > div > div { background-color: #d9b64a; }
+footer, #MainMenu { visibility: hidden; }
 
-/* ---------- Quran Panel ---------- */
+/* ---------- Quran reading panel ---------- */
 .mushaf {
-    background: #f9f4e3; border: 2px solid #d9b64a; border-radius: 18px; padding: 28px 30px; margin-top: 10px;
-    box-shadow: inset 0 0 60px rgba(185,147,47,0.15), 0 6px 24px rgba(0,0,0,0.35); max-height: 75vh; overflow-y: auto; direction: rtl;
+    background: #f9f4e3; border: 2px solid #d9b64a; border-radius: 18px;
+    padding: 28px 30px; margin-top: 10px;
+    box-shadow: inset 0 0 60px rgba(185,147,47,0.15), 0 6px 24px rgba(0,0,0,0.35);
+    max-height: 75vh; overflow-y: auto; direction: rtl;
 }
-.surah-header { font-family:'Amiri',serif; text-align:center; color:#7a5c12; background: linear-gradient(90deg, transparent, rgba(217,182,74,0.30), transparent); border-top: 1px solid #c9a94f; border-bottom: 1px solid #c9a94f; font-size: 1.6rem; font-weight: 700; padding: 8px 0; margin: 20px 0 6px 0; }
+.surah-header {
+    font-family:'Amiri',serif; text-align:center; color:#7a5c12;
+    background: linear-gradient(90deg, transparent, rgba(217,182,74,0.30), transparent);
+    border-top: 1px solid #c9a94f; border-bottom: 1px solid #c9a94f;
+    font-size: 1.6rem; font-weight: 700; padding: 8px 0; margin: 20px 0 6px 0;
+}
 .surah-header.cont { font-size: 1.15rem; opacity: 0.85; }
 .basmala { font-family:'Amiri Quran','Amiri',serif; text-align:center; color:#3a2e10; font-size:1.7rem; margin: 8px 0 12px 0; }
 .quran-text { font-family:'Amiri Quran','Amiri',serif; color:#26200e; font-size:1.75rem; line-height:2.7; text-align:justify; }
 .aya-num { color: #a9821f; font-size: 1.25rem; }
 
-footer, #MainMenu { visibility: hidden; }
+/* ---------- Mobile (phones) ---------- */
+@media (max-width: 640px) {
+    .hero { padding: 0.8rem 0.4rem 0.4rem 0.4rem; }
+    .hero .bismillah { font-size: 1.5rem; }
+    .hero .title { font-size: 1.45rem; line-height: 1.7; }
+    .hero .dua { font-size: 1.0rem; line-height: 1.9; }
+    .section-title { font-size: 1.2rem; }
+
+    .stat-row { gap: 8px; }
+    .stat-box { min-width: 40%; padding: 8px 10px; flex: 1 1 40%; }
+    .stat-box .big { font-size: 1.35rem; }
+    .stat-box .lbl { font-size: 0.75rem; }
+
+    .milestone { padding: 4px 10px; font-size: 0.78rem; }
+    .remaining-panel { padding: 10px 8px; }
+    .remaining-panel .head { font-size: 1.0rem; }
+    .chip { font-size: 0.78rem; padding: 3px 9px; }
+
+    .juz-grid { grid-template-columns: repeat(2, 1fr); gap: 8px; }
+    .juz-card { min-height: 104px; padding: 9px 6px; }
+    .juz-card .num { font-size: 1.0rem; }
+    .juz-card .jname { font-size: 0.85rem; }
+    .juz-card .reader { font-size: 0.75rem; }
+    .juz-card .badge { font-size: 0.68rem; }
+
+    .board-row { padding: 6px 10px; gap: 8px; }
+    .board-row .rank { font-size: 1.0rem; width: 1.6rem; }
+    .board-row .bname { font-size: 0.9rem; }
+
+    .mushaf { padding: 14px 12px; max-height: 68vh; border-radius: 14px; }
+    .surah-header { font-size: 1.25rem; margin: 14px 0 4px 0; }
+    .surah-header.cont { font-size: 0.95rem; }
+    .basmala { font-size: 1.35rem; }
+    .quran-text { font-size: 1.4rem; line-height: 2.35; }
+    .aya-num { font-size: 1.0rem; }
+
+    .photo-hero img { width: 150px !important; }
+}
 </style>
 """,
     unsafe_allow_html=True,
 )
 
 # ----------------------------------------------------------------------------
-# Header & Dedication
+# Header: photo + dedication
 # ----------------------------------------------------------------------------
 st.markdown('<div class="hero"><div class="bismillah">﷽</div></div>', unsafe_allow_html=True)
 
 if MOTHER_IMG.exists():
+    import base64
     _img_b64 = base64.b64encode(MOTHER_IMG.read_bytes()).decode()
-    st.markdown(f'<div class="photo-frame" style="text-align:center;"><img src="data:image/jpeg;base64,{_img_b64}" width="200" alt=""/></div>', unsafe_allow_html=True)
+    st.markdown(
+        f'<div class="photo-frame photo-hero" style="text-align:center;">'
+        f'<img src="data:image/jpeg;base64,{_img_b64}" width="230" alt=""/></div>',
+        unsafe_allow_html=True,
+    )
 
-st.markdown(f'<div class="hero"><div class="title">ختمة قرآن على روح {MOTHER_NAME}</div><div class="dua">اللهم اجعل كل حرفٍ يُقرأ في هذه الختمة نورًا لها ورحمة وجافِ القبر عن جنبيها واجعلها في جنات النعيم...<br>«وَقُل رَّبِّ ارْحَمْهُمَا كَمَا رَبَّيَانِي صَغِيرًا»</div></div>', unsafe_allow_html=True)
-
-# Audio trigger
-if _ensure_static_audio():
-    st.markdown('<audio autoplay preload="auto" src="./app/static/yasin.mp3" style="display:none"></audio>', unsafe_allow_html=True)
+st.markdown(
+    f"""
+<div class="hero">
+  <div class="title">ختمة قرآن على روح {MOTHER_NAME}</div>
+  <div class="dua">
+    اللهم اغفر لها وارحمها، وعافها واعفُ عنها، وأكرم نُزلها، ووسّع مُدخلها،
+    واجعل قبرها روضةً من رياض الجنة، واجعل كل حرفٍ يُقرأ في هذه الختمة نورًا لها ورحمة
+    <br>«وَقُل رَّبِّ ارْحَمْهُمَا كَمَا رَبَّيَانِي صَغِيرًا»
+  </div>
+</div>
+""",
+    unsafe_allow_html=True,
+)
 
 # ----------------------------------------------------------------------------
-# Calculations
+# Yasin audio
+# ----------------------------------------------------------------------------
+# ----------------------------------------------------------------------------
+# Yasin — hidden background audio, plays once on page load
+# (served via Streamlit static serving so the page stays lightweight)
+# ----------------------------------------------------------------------------
+def _ensure_static_audio():
+    static_dst = APP_DIR / "static" / "yasin.mp3"
+    if static_dst.exists():
+        return True
+    if YASIN_MP3.exists():
+        static_dst.parent.mkdir(exist_ok=True)
+        import shutil
+        shutil.copy(YASIN_MP3, static_dst)
+        return True
+    return False
+
+
+if _ensure_static_audio():
+    st.markdown(
+        '<audio autoplay preload="auto" src="./app/static/yasin.mp3" style="display:none"></audio>',
+        unsafe_allow_html=True,
+    )
+
+# ----------------------------------------------------------------------------
+# Compute state from readings log
 # ----------------------------------------------------------------------------
 readings = load_readings()
 done_counts = {j: 0 for j in range(1, 31)}
-active_by_juz = {j: [] for j in range(1, 31)}  # Stores tuple: (reading_id, reader_name)
+active_by_juz = {j: [] for j in range(1, 31)}          # names currently reading
+done_names_by_juz = {j: [] for j in range(1, 31)}
+active_rows = []                                        # readings with status='reading'
+scores = {}                                             # reader -> done count
 
 for r in readings:
     j = int(r["juz"])
     if r["status"] == "done":
         done_counts[j] += 1
+        done_names_by_juz[j].append(r["reader_name"])
+        scores[r["reader_name"]] = scores.get(r["reader_name"], 0) + 1
     else:
-        active_by_juz[j].append((r["id"], r["reader_name"]))
+        active_by_juz[j].append(r["reader_name"])
+        active_rows.append(r)
 
-completed_khatmas = min(done_counts.values())
-current_no = completed_khatmas + 1
-progress = sum(1 for j in range(1, 31) if done_counts[j] >= current_no)
+completed_khatmas = min(done_counts.values())           # full khatmas finished
+current_no = completed_khatmas + 1                      # the khatma in progress
+covered = {j for j in range(1, 31) if done_counts[j] >= current_no}
+remaining = [j for j in range(1, 31) if j not in covered]
+progress = len(covered)
 total_done_readings = sum(done_counts.values())
 readers_count = len({r["reader_name"] for r in readings})
 
-# Summary Stats Layout
+# ----------------------------------------------------------------------------
+# Progress, milestones, remaining
+# ----------------------------------------------------------------------------
+st.markdown(f'<div class="section-title">📿 الختمة {khatma_ordinal(current_no)} — تقدّمنا معًا</div>', unsafe_allow_html=True)
+
 st.markdown(
     f"""
 <div class="stat-row">
@@ -269,84 +450,169 @@ st.markdown(
 """,
     unsafe_allow_html=True,
 )
+
 st.progress(progress / 30)
 
-# ----------------------------------------------------------------------------
-# Popup Dialogues (Simplified Multi-User Protected Flow)
-# ----------------------------------------------------------------------------
-@st.dialog("📝 حجز جزء للقراءة")
-def show_reserve_dialog(juz_no):
-    st.write(f"لقد اخترت: **الجزء {ar_num(juz_no)} — {JUZ_NAMES[juz_no-1]}**")
-    name_input = st.text_input("اكتب اسمك الكريم هنا لبدء القراءة:", key="input_res_name", placeholder="مثال: أحمد محمد")
-    if st.button("تأكيد وحجز الجزء الآن 🤲", use_container_width=True):
-        if not name_input.strip():
-            st.error("الرجاء كتابة الاسم أولاً")
-        else:
-            add_reading(juz_no, name_input.strip())
-            st.session_state["mushaf_juz"] = juz_no  # انتقال تلقائي للمصحف
-            st.success("تم الحجز بنجاح! تقبل الله منك.")
-            st.rerun()
+MILESTONES = [(5, "٥ أجزاء"), (10, "ثلث الختمة"), (15, "نصف الختمة"), (20, "ثلثا الختمة"), (25, "٢٥ جزءًا"), (30, "ختمة كاملة 🌙")]
+ms_html = "".join(
+    f'<span class="milestone {"hit" if progress >= v else ""}">{"✓ " if progress >= v else ""}{lbl}</span>'
+    for v, lbl in MILESTONES
+)
+st.markdown(f'<div class="milestone-track">{ms_html}</div>', unsafe_allow_html=True)
 
-@st.dialog("✅ تأكيد إتمام القراءة")
-def show_complete_dialog(juz_no, active_list):
-    st.write(f"تأكيد إنهاء: **الجزء {ar_num(juz_no)} — {JUZ_NAMES[juz_no-1]}**")
-    
-    # حماية البيانات: عرض الأشخاص الذين يقرأون هذا الجزء حالياً
-    readers_text = " ، ".join([f"[{r[1]}]" for r in active_list])
-    st.warning(f"هذا الجزء محجوز حالياً باسم: {readers_text}")
-    
-    st.markdown("⚠️ **لحماية القراءات ومنع الأخطاء:** يرجى كتابة اسمك تماماً كما سجلته لتأكيد الختم:")
-    confirm_name = st.text_input("اكتب اسمك المسجّل:", key="input_conf_name")
-    
-    if st.button("نعم، أتممت قراءته كاملاً الحين ✓", use_container_width=True):
-        matched_record = next((r for r in active_list if r[1].strip() == confirm_name.strip()), None)
-        if matched_record:
-            confirm_done(matched_record[0])
-            st.session_state["mushaf_juz"] = juz_no
-            st.success("جزاك الله خيراً وجعلها في ميزان حسناتها! 🌿")
-            st.rerun()
-        else:
-            st.error("❌ الاسم غير مطابق للاسم المحجوز به هذا الجزء حالياً! يرجى التأكد.")
-
-# ----------------------------------------------------------------------------
-# Seamless Grid Generation
-# ----------------------------------------------------------------------------
-st.markdown('<div class="section-title">📖 لوحة الأجزاء الثلاثون (اضغط مباشرة على أي جزء)</div>', unsafe_allow_html=True)
-
-grid_columns = st.columns(6) # شبكة متناسقة من 6 أعمدة متجاوبة لكل الأجهزة
-for index, j in enumerate(range(1, 31)):
-    actives = active_by_juz[j]
-    is_covered = (done_counts[j] >= current_no)
-    
-    if is_covered:
-        btn_class = "juz-btn-done"
-        lbl = f"الجزء {ar_num(j)}\n{JUZ_NAMES[j-1]}\n✓ تم ختمه"
-    elif len(actives) > 0:
-        btn_class = "juz-btn-reading"
-        # يعرض اسم أول قارئ متوفر بالجزء
-        lbl = f"الجزء {ar_num(j)}\n{JUZ_NAMES[j-1]}\n⏳ يقرؤه: {actives[0][1]}"
+if progress == 30:
+    st.balloons()
+    st.success(f"🌙 اكتملت الختمة {khatma_ordinal(current_no)} بفضل الله — تقبّل الله منا ومنكم! الختمة {khatma_ordinal(current_no + 1)} تبدأ الآن، فلا تتوقفوا 🤲")
+elif remaining:
+    if len(remaining) <= 5:
+        head = f"🔥 اقتربنا جدًا! لم يبقَ سوى {ar_num(len(remaining))} — من يكسب شرف إتمام الختمة؟"
+    elif len(remaining) <= 15:
+        head = f"💪 قطعنا أكثر من النصف — بقي {ar_num(len(remaining))} جزءًا فقط لإتمام الختمة {khatma_ordinal(current_no)}"
     else:
-        btn_class = "juz-btn-available"
-        lbl = f"الجزء {ar_num(j)}\n{JUZ_NAMES[j-1]}\n⭐ اضغط لحجزه"
-        
-    with grid_columns[index % 6]:
-        st.markdown(f'<div class="juz-container {btn_class}">', unsafe_allow_html=True)
-        if st.button(lbl, key=f"j_btn_{j}"):
-            st.session_state["mushaf_juz"] = j # بمجرد الضغط، يتحدث المصحف بالأسفل فوراً
-            if is_covered:
-                # إذا تم الختم، يسمح لهم بحجزه كقراءة إضافية للختمة القادمة
-                show_reserve_dialog(j)
-            elif len(actives) > 0:
-                show_complete_dialog(j, actives)
-            else:
-                show_reserve_dialog(j)
-        st.markdown('</div>', unsafe_allow_html=True)
+        head = f"الأجزاء المتبقية لإتمام الختمة {khatma_ordinal(current_no)}: {ar_num(len(remaining))} جزءًا — اختر منها جزءك"
+    chips = "".join(f'<span class="chip">الجزء {ar_num(j)} — {JUZ_NAMES[j-1]}</span>' for j in remaining)
+    st.markdown(f'<div class="remaining-panel"><div class="head">{head}</div>{chips}</div>', unsafe_allow_html=True)
 
 # ----------------------------------------------------------------------------
-# The Quran Reader Panel (Automatically Synchronized)
+# Juz grid
 # ----------------------------------------------------------------------------
-selected_juz = st.session_state["mushaf_juz"]
-st.markdown(f'<div class="section-title" id="mushaf-view">🕌 مصحف التلاوة المباشر — يعرض الآن (الجزء {ar_num(selected_juz)})</div>', unsafe_allow_html=True)
-st.markdown('<div style="color:#cfe3d6;font-family:Amiri,serif;font-size:1.1rem;margin-bottom:8px;">بمجرد اختيارك أو تفاعلك مع أي جزء بالأعلى، سيتم فتح صفحات المصحف الشريف الخاصة به هنا بالأسفل فوراً لتسهيل القراءة بنية الثواب:</div>', unsafe_allow_html=True)
+st.markdown('<div class="section-title">📖 الأجزاء الثلاثون</div>', unsafe_allow_html=True)
+st.markdown(
+    '<div style="color:#cfe3d6;font-size:0.95rem;">يمكن لأكثر من قارئ قراءة الجزء نفسه — كل قراءة تُحسب في الختمات القادمة بإذن الله</div>',
+    unsafe_allow_html=True,
+)
 
-st.markdown(f'<div class="mushaf">{render_juz_html(selected_juz)}</div>', unsafe_allow_html=True)
+
+def names_snippet(names, limit=2):
+    if not names:
+        return ""
+    shown = "، ".join(names[:limit])
+    extra = len(names) - limit
+    return shown + (f" +{ar_num(extra)}" if extra > 0 else "")
+
+
+cards = []
+for j in range(1, 31):
+    n_active = len(active_by_juz[j])
+    n_done = done_counts[j]
+    if j in covered:
+        cls = "juz-done"
+        badge = f"✓ تمّت {ar_num(n_done)} مرة" if n_done > 1 else "✓ تمّت القراءة"
+        reader = names_snippet(done_names_by_juz[j])
+    elif n_active > 0:
+        cls = "juz-reading"
+        badge = f"⏳ يقرؤه الآن {ar_num(n_active)}" if n_active > 1 else "⏳ جارٍ القراءة"
+        reader = names_snippet(active_by_juz[j])
+    else:
+        cls, badge, reader = "juz-needs", "⭐ يحتاج قارئًا", ""
+    cards.append(
+        f'<div class="juz-card {cls}">'
+        f'<div class="num">الجزء {ar_num(j)}</div>'
+        f'<div class="jname">{JUZ_NAMES[j-1]}</div>'
+        f'<div class="reader">{reader}</div>'
+        f'<div class="badge">{badge}</div>'
+        f"</div>"
+    )
+st.markdown(f'<div class="juz-grid">{"".join(cards)}</div>', unsafe_allow_html=True)
+
+# ----------------------------------------------------------------------------
+# Actions
+# ----------------------------------------------------------------------------
+col_a, col_b = st.columns(2)
+
+
+def juz_pick_label(j):
+    tags = []
+    if j in remaining and not active_by_juz[j]:
+        tags.append("⭐ يحتاج قارئًا")
+    elif active_by_juz[j]:
+        tags.append(f"يقرؤه {ar_num(len(active_by_juz[j]))}")
+    return f"الجزء {ar_num(j)} — {JUZ_NAMES[j-1]}" + (f"  ({'، '.join(tags)})" if tags else "")
+
+
+# needy ajza' first, to encourage completing the khatma
+pick_order = sorted(range(1, 31), key=lambda j: (j not in remaining, len(active_by_juz[j]) > 0, j))
+
+with col_a:
+    st.markdown('<div class="section-title">✍️ ابدأ قراءة جزء</div>', unsafe_allow_html=True)
+    with st.form("reserve_form", clear_on_submit=True):
+        name = st.text_input("اسمك", placeholder="اكتب اسمك هنا")
+        chosen = st.multiselect(
+            "اختر جزءًا أو أكثر — الأجزاء التي تحتاج قارئًا تظهر أولًا ⭐",
+            options=pick_order,
+            format_func=juz_pick_label,
+        )
+        submitted = st.form_submit_button("ابدأ القراءة 🤲")
+    if submitted:
+        if not name.strip():
+            st.warning("من فضلك اكتب اسمك أولًا")
+        elif not chosen:
+            st.warning("اختر جزءًا واحدًا على الأقل")
+        else:
+            new, skipped = add_readings(chosen, name.strip())
+            if new:
+                st.success(f"تقبّل الله منك يا {name.strip()} — بدأتَ قراءة: {'، '.join('الجزء ' + ar_num(x) for x in new)}")
+            if skipped:
+                st.info(f"أنت تقرأ بالفعل: {'، '.join('الجزء ' + ar_num(x) for x in skipped)}")
+            st.rerun()
+
+with col_b:
+    st.markdown('<div class="section-title">✅ أتممتَ القراءة؟</div>', unsafe_allow_html=True)
+    with st.form("done_form", clear_on_submit=True):
+        finished = st.multiselect(
+            "اختر قراءاتك التي أنهيتها",
+            options=[r["id"] for r in active_rows],
+            format_func=lambda rid: next(
+                f"الجزء {ar_num(r['juz'])} — {r['reader_name']}" for r in active_rows if r["id"] == rid
+            ),
+        )
+        done_sub = st.form_submit_button("تمّت القراءة ✓")
+    if done_sub:
+        if not finished:
+            st.warning("اختر القراءات التي أنهيتها")
+        else:
+            mark_done(finished)
+            st.success("تقبّل الله — جُعلت في ميزان حسناتها 🌿")
+            st.rerun()
+
+# ----------------------------------------------------------------------------
+# Leaderboard
+# ----------------------------------------------------------------------------
+if scores:
+    st.markdown('<div class="section-title">🏆 لوحة الشرف — أكثر القرّاء عطاءً لها</div>', unsafe_allow_html=True)
+    medals = ["🥇", "🥈", "🥉"]
+    top = sorted(scores.items(), key=lambda kv: -kv[1])[:10]
+    rows_html = []
+    for i, (rname, sc) in enumerate(top):
+        medal = medals[i] if i < 3 else ar_num(i + 1)
+        rows_html.append(
+            f'<div class="board-row {"top1" if i == 0 else ""}">'
+            f'<span class="rank">{medal}</span>'
+            f'<span class="bname">{rname}</span>'
+            f'<span class="score">{ar_num(sc)} {"جزء" if sc <= 10 else "جزءًا"}</span>'
+            f"</div>"
+        )
+    st.markdown(f'<div class="board">{"".join(rows_html)}</div>', unsafe_allow_html=True)
+    st.markdown(
+        '<div style="text-align:center;color:#cfe3d6;font-family:Amiri,serif;font-size:1.05rem;margin-top:4px;">'
+        "«وَفِي ذَٰلِكَ فَلْيَتَنَافَسِ الْمُتَنَافِسُونَ»</div>",
+        unsafe_allow_html=True,
+    )
+
+# ----------------------------------------------------------------------------
+# Read the Quran online (bundled Uthmani text)
+# ----------------------------------------------------------------------------
+st.markdown('<div class="section-title">🕌 اقرأ جزءك هنا مباشرة</div>', unsafe_allow_html=True)
+st.markdown(
+    '<div style="color:#cfe3d6;font-family:Amiri,serif;font-size:1.1rem;">'
+    "اختر الجزء واقرأه من المصحف مباشرة — بنية أن يكون ثوابه لها بإذن الله"
+    "</div>",
+    unsafe_allow_html=True,
+)
+sel_juz = st.selectbox(
+    "اختر الجزء",
+    options=list(range(1, 31)),
+    format_func=lambda j: f"الجزء {ar_num(j)} — {JUZ_NAMES[j-1]}",
+    label_visibility="collapsed",
+)
+st.markdown(f'<div class="mushaf">{render_juz_html(sel_juz)}</div>', unsafe_allow_html=True)

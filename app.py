@@ -602,7 +602,7 @@ with col_b:
 # Leaderboard
 # ----------------------------------------------------------------------------
 if scores:
-    st.markdown('<div class="section-title">🏆 لوحة الشرف — أكثر القرّاء عطاءً لها</div>', unsafe_allow_html=True)
+    st.markdown('<div class="section-title"> أكثر القرّاء عطاءً لها</div>', unsafe_allow_html=True)
     medals = ["🥇", "🥈", "🥉"]
     top = sorted(scores.items(), key=lambda kv: -kv[1])[:10]
     rows_html = []

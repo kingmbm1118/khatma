@@ -1,16 +1,15 @@
 # -*- coding: utf-8 -*-
 """
 ختمة قرآن مبسطة — صدقة جارية على روح الحاجة رضا سعد على
-تعتمد على جلب النص الموثوق مباشرة من خوادم الـ Quran المفتوحة والموثقة رسميًا.
+واجهة تفاعلية فائقة السهولة: اضغط على الجزء -> يفتح نافذة الحجز -> يعرض المصحف تلقائيًا.
 """
 
 import sqlite3
-import urllib.request
-import json
 from datetime import datetime, timezone
 from pathlib import Path
 import base64
-import os
+import json
+import shutil
 
 import streamlit as st
 
@@ -19,13 +18,16 @@ import streamlit as st
 # ----------------------------------------------------------------------------
 APP_DIR = Path(__file__).parent
 ASSETS = APP_DIR / "assets"
-os.makedirs(ASSETS, exist_ok=True)
+MOTHER_IMG = ASSETS / "mother.jpg"
+YASIN_MP3 = ASSETS / "yasin.mp3"
+
 
 def get_secret(key, default=""):
     try:
         return st.secrets.get(key, default)
     except Exception:
         return default
+
 
 MOTHER_NAME = get_secret("MOTHER_NAME", "أمي")
 
@@ -37,39 +39,13 @@ JUZ_NAMES = [
     "المجادلة", "الملك", "النبأ"
 ]
 
-# حدود الأجزاء الدقيقة 100% حسب المصحف العثماني الشريف:
-# (سورة البداية، آية البداية، سورة النهاية، آية النهاية)
 JUZ_RANGES = [
-    (1, 1, 2, 141),    # 1
-    (2, 142, 2, 252),  # 2
-    (2, 253, 3, 92),   # 3
-    (3, 93, 4, 23),    # 4
-    (4, 24, 4, 147),   # 5
-    (4, 148, 5, 81),   # 6
-    (5, 82, 6, 110),   # 7
-    (6, 111, 7, 87),   # 8
-    (7, 88, 8, 40),    # 9
-    (8, 41, 9, 92),    # 10
-    (9, 93, 11, 5),    # 11
-    (11, 6, 12, 52),   # 12
-    (12, 53, 14, 52),  # 13
-    (15, 1, 16, 128),  # 14
-    (17, 1, 18, 74),   # 15
-    (18, 75, 20, 135), # 16
-    (21, 1, 22, 78),   # 17
-    (23, 1, 25, 20),   # 18
-    (25, 21, 27, 55),  # 19
-    (27, 56, 29, 45),  # 20
-    (29, 46, 33, 30),  # 21
-    (33, 31, 36, 27),  # 22
-    (36, 28, 39, 31),  # 23
-    (39, 32, 41, 46),  # 24
-    (41, 47, 45, 37),  # 25
-    (46, 1, 51, 30),   # 26
-    (51, 31, 57, 29),  # 27
-    (58, 1, 66, 12),   # 28
-    (67, 1, 77, 50),   # 29
-    (78, 1, 114, 6),   # 30
+    (1, 1, 2, 141), (2, 142, 2, 252), (2, 253, 3, 92), (3, 93, 4, 23), (4, 24, 4, 147),
+    (4, 148, 5, 81), (5, 82, 6, 110), (6, 111, 7, 87), (7, 88, 8, 40), (8, 41, 9, 92),
+    (9, 93, 11, 5), (11, 6, 12, 52), (12, 53, 14, 52), (15, 1, 16, 128), (17, 1, 18, 74),
+    (18, 75, 20, 135), (21, 1, 22, 78), (23, 1, 25, 20), (25, 21, 27, 55), (27, 56, 29, 45),
+    (29, 46, 33, 30), (33, 31, 36, 27), (36, 28, 39, 31), (39, 32, 41, 46), (41, 47, 45, 37),
+    (46, 1, 51, 30), (51, 31, 57, 29), (58, 1, 66, 12), (67, 1, 77, 50), (78, 1, 114, 6),
 ]
 
 _AR_DIGITS = str.maketrans("0123456789", "٠١٢٣٤٥٦٧٨٩")
@@ -77,12 +53,14 @@ _AR_DIGITS = str.maketrans("0123456789", "٠١٢٣٤٥٦٧٨٩")
 def ar_num(n):
     return str(n).translate(_AR_DIGITS)
 
+
 st.set_page_config(
     page_title=f"ختمة على روح {MOTHER_NAME}",
     page_icon="📖",
     layout="wide",
 )
 
+# إدارة الحالة لتحديد الجزء المعروض تلقائياً في المصحف
 if "mushaf_juz" not in st.session_state:
     st.session_state["mushaf_juz"] = 1
 
@@ -145,72 +123,36 @@ def confirm_done(reading_id):
     load_readings.clear()
 
 # ----------------------------------------------------------------------------
-# Online Trusted Source Quran Data Engine (Tanzil API Delivery)
+# Quran Text Loader
 # ----------------------------------------------------------------------------
-@st.cache_data(show_spinner=True)
-def fetch_trusted_quran():
-    """يجلب المصحف العثماني بالتشكيل كاملاً ومقسمًا بالسور من مستودع بيانات القرآن المفتوح المعتمد"""
-    url = "https://cdn.jsdelivr.net/gh/semarketir/quranjson@master/source/surah.json"
-    try:
-        with urllib.request.urlopen(url) as response:
-            surahs_list = json.loads(response.read().decode('utf-8'))
-            
-            # ترتيب وتحويل البيانات لتوافق محرك التصفح الداخلي للأجزاء
-            structured_quran = []
-            for s in surahs_list:
-                surah_url = f"https://cdn.jsdelivr.net/gh/semarketir/quranjson@master/source/surah/surah_{s['index']}.json"
-                with urllib.request.urlopen(surah_url) as s_res:
-                    s_data = json.loads(s_res.read().decode('utf-8'))
-                    verses_list = []
-                    # تحويل آيات السورة إلى الشكل القياسي المطلوب للمصحف
-                    for k, v in s_data["verse"].items():
-                        # تنظيف مفاتيح الآيات وتحويلها لأرقام صحيحة
-                        v_id = int(k.replace("verse_", ""))
-                        verses_list.append({"id": v_id, "text": v})
-                    
-                    # ترتيب الآيات تصاعدياً للتأكد من تسلسل النص
-                    verses_list.sort(key=lambda x: x["id"])
-                    
-                    structured_quran.append({
-                        "id": int(s["index"]),
-                        "name": s["titleAr"],
-                        "total_verses": int(s["count"]),
-                        "verses": verses_list
-                    })
-            return structured_quran
-    except Exception as e:
-        st.error(f"حدث خطأ أثناء جلب المصحف الشريف عبر الإنترنت: {e}. يرجى التحقق من الاتصال بالشبكة.")
-        return []
+@st.cache_data(show_spinner=False)
+def load_quran():
+    with open(ASSETS / "quran.json", encoding="utf-8") as f:
+        return json.load(f)
 
 BASMALA = "بِسۡمِ ٱللَّهِ ٱلرَّحۡمَٰنِ ٱلرَّحِيمِ"
 
+@st.cache_data(show_spinner=False)
 def render_juz_html(juz_no: int) -> str:
-    quran = fetch_trusted_quran()
-    if not quran:
-        return '<div style="color:red; text-align:center;">تعذر تحميل صفحات المصحف الشريف حالياً.</div>'
-        
+    quran = load_quran()
     s1, a1, s2, a2 = JUZ_RANGES[juz_no - 1]
     parts = []
-    
     for s in range(s1, s2 + 1):
         surah = quran[s - 1]
         start = a1 if s == s1 else 1
         end = a2 if s == s2 else surah["total_verses"]
-        
         if start == 1:
             parts.append(f'<div class="surah-header">سُورَةُ {surah["name"]}</div>')
-            if s not in (1, 9): # الفاتحة والتوبة لا تكرر البسملة في أولهما كالعادة
+            if s not in (1, 9):
                 parts.append(f'<div class="basmala">{BASMALA}</div>')
         else:
             parts.append(f'<div class="surah-header cont">تكملة سُورَةِ {surah["name"]} — من الآية {ar_num(start)}</div>')
-            
         ayat = [f'{v["text"]} <span class="aya-num">﴿{ar_num(v["id"])}﴾</span>' for v in surah["verses"][start - 1 : end]]
         parts.append(f'<div class="quran-text">{" ".join(ayat)}</div>')
-        
     return "".join(parts)
 
 # ----------------------------------------------------------------------------
-# CSS Styles Injection
+# Styles & Theme Injection
 # ----------------------------------------------------------------------------
 st.markdown(
     """
@@ -228,7 +170,9 @@ h1, h2, h3, .amiri { font-family: 'Amiri', serif !important; }
 .hero .bismillah { font-family:'Amiri',serif; font-size: 2.0rem; color: #d9b64a; margin-bottom: 0.4rem; }
 .hero .title { font-family:'Amiri',serif; font-size: 2.4rem; font-weight: 700; color: #f4ecd6; }
 .hero .dua { font-family:'Amiri',serif; font-size: 1.25rem; color: #cfe3d6; max-width: 720px; margin: 0.6rem auto; line-height: 2.1; }
+.photo-frame img { border-radius: 50%; border: 4px solid #d9b64a; box-shadow: 0 0 40px rgba(217,182,74,0.35); }
 
+/* ---------- Stats Boxes ---------- */
 .stat-row { display:flex; gap:12px; flex-wrap:wrap; justify-content:center; margin-top:8px; }
 .stat-box {
     background: rgba(244,236,214,0.06); border: 1px solid rgba(217,182,74,0.45);
@@ -237,6 +181,7 @@ h1, h2, h3, .amiri { font-family: 'Amiri', serif !important; }
 .stat-box .big { font-family:'Amiri',serif; font-size: 1.9rem; color:#d9b64a; font-weight:700; }
 .stat-box .lbl { font-size: 0.85rem; opacity: 0.9; }
 
+/* ---------- Grid Styling for Native Buttons ---------- */
 div[data-testid="stColumn"] div.stButton > button {
     width: 100% !important;
     min-height: 120px !important;
@@ -251,13 +196,16 @@ div[data-testid="stColumn"] div.stButton > button {
     transition: all 0.2s ease-in-out !important;
 }
 
+/* Custom button states overrides */
 .juz-btn-available > button { background: rgba(244,236,214,0.06) !important; border: 1.5px dashed rgba(217,182,74,0.6) !important; color: #f0d98a !important; }
 .juz-btn-reading > button { background: rgba(217,182,74,0.15) !important; border: 1.5px solid #d9b64a !important; color: #f4ecd6 !important; font-weight: bold !important;}
 .juz-btn-done > button { background: linear-gradient(160deg, #d9b64a, #b9932f) !important; border: 1.5px solid #f0d98a !important; color: #1d2a17 !important; font-weight: bold !important; }
 
 div[data-testid="stColumn"] div.stButton > button:hover { transform: translateY(-3px) !important; box-shadow: 0 4px 15px rgba(0,0,0,0.2) !important; }
+
 .section-title { font-family:'Amiri',serif; color: #d9b64a; font-size: 1.6rem; border-bottom: 1px solid rgba(217,182,74,0.35); padding-bottom: 6px; margin-top: 1.8rem; }
 
+/* ---------- Quran Panel ---------- */
 .mushaf {
     background: #f9f4e3; border: 2px solid #d9b64a; border-radius: 18px; padding: 28px 30px; margin-top: 10px;
     box-shadow: inset 0 0 60px rgba(185,147,47,0.15), 0 6px 24px rgba(0,0,0,0.35); max-height: 75vh; overflow-y: auto; direction: rtl;
@@ -278,14 +226,23 @@ footer, #MainMenu { visibility: hidden; }
 # Header & Dedication
 # ----------------------------------------------------------------------------
 st.markdown('<div class="hero"><div class="bismillah">﷽</div></div>', unsafe_allow_html=True)
+
+if MOTHER_IMG.exists():
+    _img_b64 = base64.b64encode(MOTHER_IMG.read_bytes()).decode()
+    st.markdown(f'<div class="photo-frame" style="text-align:center;"><img src="data:image/jpeg;base64,{_img_b64}" width="200" alt=""/></div>', unsafe_allow_html=True)
+
 st.markdown(f'<div class="hero"><div class="title">ختمة قرآن على روح {MOTHER_NAME}</div><div class="dua">اللهم اجعل كل حرفٍ يُقرأ في هذه الختمة نورًا لها ورحمة وجافِ القبر عن جنبيها واجعلها في جنات النعيم...<br>«وَقُل رَّبِّ ارْحَمْهُمَا كَمَا رَبَّيَانِي صَغِيرًا»</div></div>', unsafe_allow_html=True)
+
+# Audio trigger
+if _ensure_static_audio():
+    st.markdown('<audio autoplay preload="auto" src="./app/static/yasin.mp3" style="display:none"></audio>', unsafe_allow_html=True)
 
 # ----------------------------------------------------------------------------
 # Calculations
 # ----------------------------------------------------------------------------
 readings = load_readings()
 done_counts = {j: 0 for j in range(1, 31)}
-active_by_juz = {j: [] for j in range(1, 31)}
+active_by_juz = {j: [] for j in range(1, 31)}  # Stores tuple: (reading_id, reader_name)
 
 for r in readings:
     j = int(r["juz"])
@@ -300,6 +257,7 @@ progress = sum(1 for j in range(1, 31) if done_counts[j] >= current_no)
 total_done_readings = sum(done_counts.values())
 readers_count = len({r["reader_name"] for r in readings})
 
+# Summary Stats Layout
 st.markdown(
     f"""
 <div class="stat-row">
@@ -314,7 +272,7 @@ st.markdown(
 st.progress(progress / 30)
 
 # ----------------------------------------------------------------------------
-# Popup Dialogues (Simplified Secure Flow)
+# Popup Dialogues (Simplified Multi-User Protected Flow)
 # ----------------------------------------------------------------------------
 @st.dialog("📝 حجز جزء للقراءة")
 def show_reserve_dialog(juz_no):
@@ -325,15 +283,18 @@ def show_reserve_dialog(juz_no):
             st.error("الرجاء كتابة الاسم أولاً")
         else:
             add_reading(juz_no, name_input.strip())
-            st.session_state["mushaf_juz"] = juz_no
+            st.session_state["mushaf_juz"] = juz_no  # انتقال تلقائي للمصحف
             st.success("تم الحجز بنجاح! تقبل الله منك.")
             st.rerun()
 
 @st.dialog("✅ تأكيد إتمام القراءة")
 def show_complete_dialog(juz_no, active_list):
     st.write(f"تأكيد إنهاء: **الجزء {ar_num(juz_no)} — {JUZ_NAMES[juz_no-1]}**")
+    
+    # حماية البيانات: عرض الأشخاص الذين يقرأون هذا الجزء حالياً
     readers_text = " ، ".join([f"[{r[1]}]" for r in active_list])
     st.warning(f"هذا الجزء محجوز حالياً باسم: {readers_text}")
+    
     st.markdown("⚠️ **لحماية القراءات ومنع الأخطاء:** يرجى كتابة اسمك تماماً كما سجلته لتأكيد الختم:")
     confirm_name = st.text_input("اكتب اسمك المسجّل:", key="input_conf_name")
     
@@ -342,17 +303,17 @@ def show_complete_dialog(juz_no, active_list):
         if matched_record:
             confirm_done(matched_record[0])
             st.session_state["mushaf_juz"] = juz_no
-            st.success("جزاك الله خيراً! 🌿")
+            st.success("جزاك الله خيراً وجعلها في ميزان حسناتها! 🌿")
             st.rerun()
         else:
             st.error("❌ الاسم غير مطابق للاسم المحجوز به هذا الجزء حالياً! يرجى التأكد.")
 
 # ----------------------------------------------------------------------------
-# Grid Generation
+# Seamless Grid Generation
 # ----------------------------------------------------------------------------
 st.markdown('<div class="section-title">📖 لوحة الأجزاء الثلاثون (اضغط مباشرة على أي جزء)</div>', unsafe_allow_html=True)
 
-grid_columns = st.columns(6)
+grid_columns = st.columns(6) # شبكة متناسقة من 6 أعمدة متجاوبة لكل الأجهزة
 for index, j in enumerate(range(1, 31)):
     actives = active_by_juz[j]
     is_covered = (done_counts[j] >= current_no)
@@ -362,6 +323,7 @@ for index, j in enumerate(range(1, 31)):
         lbl = f"الجزء {ar_num(j)}\n{JUZ_NAMES[j-1]}\n✓ تم ختمه"
     elif len(actives) > 0:
         btn_class = "juz-btn-reading"
+        # يعرض اسم أول قارئ متوفر بالجزء
         lbl = f"الجزء {ar_num(j)}\n{JUZ_NAMES[j-1]}\n⏳ يقرؤه: {actives[0][1]}"
     else:
         btn_class = "juz-btn-available"
@@ -370,8 +332,9 @@ for index, j in enumerate(range(1, 31)):
     with grid_columns[index % 6]:
         st.markdown(f'<div class="juz-container {btn_class}">', unsafe_allow_html=True)
         if st.button(lbl, key=f"j_btn_{j}"):
-            st.session_state["mushaf_juz"] = j
+            st.session_state["mushaf_juz"] = j # بمجرد الضغط، يتحدث المصحف بالأسفل فوراً
             if is_covered:
+                # إذا تم الختم، يسمح لهم بحجزه كقراءة إضافية للختمة القادمة
                 show_reserve_dialog(j)
             elif len(actives) > 0:
                 show_complete_dialog(j, actives)
@@ -380,8 +343,10 @@ for index, j in enumerate(range(1, 31)):
         st.markdown('</div>', unsafe_allow_html=True)
 
 # ----------------------------------------------------------------------------
-# The Quran Reader Panel
+# The Quran Reader Panel (Automatically Synchronized)
 # ----------------------------------------------------------------------------
 selected_juz = st.session_state["mushaf_juz"]
 st.markdown(f'<div class="section-title" id="mushaf-view">🕌 مصحف التلاوة المباشر — يعرض الآن (الجزء {ar_num(selected_juz)})</div>', unsafe_allow_html=True)
-st.markdown('<div class="mushaf">' + render_juz_html(selected_juz) + '</div>', unsafe_allow_html=True)
+st.markdown('<div style="color:#cfe3d6;font-family:Amiri,serif;font-size:1.1rem;margin-bottom:8px;">بمجرد اختيارك أو تفاعلك مع أي جزء بالأعلى، سيتم فتح صفحات المصحف الشريف الخاصة به هنا بالأسفل فوراً لتسهيل القراءة بنية الثواب:</div>', unsafe_allow_html=True)
+
+st.markdown(f'<div class="mushaf">{render_juz_html(selected_juz)}</div>', unsafe_allow_html=True)

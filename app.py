@@ -28,7 +28,6 @@ def get_secret(key, default=""):
 
 
 MOTHER_NAME = get_secret("MOTHER_NAME", "أمي")
-ADMIN_PASSWORD = get_secret("ADMIN_PASSWORD", "")
 
 JUZ_NAMES = [
     "آلم", "سيقول", "تلك الرسل", "لن تنالوا", "والمحصنات",
@@ -158,28 +157,6 @@ def mark_done(reading_ids):
     load_readings.clear()
 
 
-def delete_readings(reading_ids):
-    if USING_SUPABASE:
-        sb = _supabase_client()
-        for rid in reading_ids:
-            sb.table("readings").delete().eq("id", rid).execute()
-    else:
-        conn = _sqlite_conn()
-        conn.executemany("DELETE FROM readings WHERE id=?", [(rid,) for rid in reading_ids])
-        conn.commit()
-        conn.close()
-    load_readings.clear()
-
-
-def reset_all():
-    if USING_SUPABASE:
-        _supabase_client().table("readings").delete().gte("juz", 1).execute()
-    else:
-        conn = _sqlite_conn()
-        conn.execute("DELETE FROM readings")
-        conn.commit()
-        conn.close()
-    load_readings.clear()
 
 
 # ----------------------------------------------------------------------------
@@ -332,6 +309,45 @@ footer, #MainMenu { visibility: hidden; }
 .basmala { font-family:'Amiri Quran','Amiri',serif; text-align:center; color:#3a2e10; font-size:1.7rem; margin: 8px 0 12px 0; }
 .quran-text { font-family:'Amiri Quran','Amiri',serif; color:#26200e; font-size:1.75rem; line-height:2.7; text-align:justify; }
 .aya-num { color: #a9821f; font-size: 1.25rem; }
+
+/* ---------- Mobile (phones) ---------- */
+@media (max-width: 640px) {
+    .hero { padding: 0.8rem 0.4rem 0.4rem 0.4rem; }
+    .hero .bismillah { font-size: 1.5rem; }
+    .hero .title { font-size: 1.45rem; line-height: 1.7; }
+    .hero .dua { font-size: 1.0rem; line-height: 1.9; }
+    .section-title { font-size: 1.2rem; }
+
+    .stat-row { gap: 8px; }
+    .stat-box { min-width: 40%; padding: 8px 10px; flex: 1 1 40%; }
+    .stat-box .big { font-size: 1.35rem; }
+    .stat-box .lbl { font-size: 0.75rem; }
+
+    .milestone { padding: 4px 10px; font-size: 0.78rem; }
+    .remaining-panel { padding: 10px 8px; }
+    .remaining-panel .head { font-size: 1.0rem; }
+    .chip { font-size: 0.78rem; padding: 3px 9px; }
+
+    .juz-grid { grid-template-columns: repeat(2, 1fr); gap: 8px; }
+    .juz-card { min-height: 104px; padding: 9px 6px; }
+    .juz-card .num { font-size: 1.0rem; }
+    .juz-card .jname { font-size: 0.85rem; }
+    .juz-card .reader { font-size: 0.75rem; }
+    .juz-card .badge { font-size: 0.68rem; }
+
+    .board-row { padding: 6px 10px; gap: 8px; }
+    .board-row .rank { font-size: 1.0rem; width: 1.6rem; }
+    .board-row .bname { font-size: 0.9rem; }
+
+    .mushaf { padding: 14px 12px; max-height: 68vh; border-radius: 14px; }
+    .surah-header { font-size: 1.25rem; margin: 14px 0 4px 0; }
+    .surah-header.cont { font-size: 0.95rem; }
+    .basmala { font-size: 1.35rem; }
+    .quran-text { font-size: 1.4rem; line-height: 2.35; }
+    .aya-num { font-size: 1.0rem; }
+
+    .photo-hero img { width: 150px !important; }
+}
 </style>
 """,
     unsafe_allow_html=True,
@@ -342,12 +358,14 @@ footer, #MainMenu { visibility: hidden; }
 # ----------------------------------------------------------------------------
 st.markdown('<div class="hero"><div class="bismillah">﷽</div></div>', unsafe_allow_html=True)
 
-c1, c2, c3 = st.columns([1, 1, 1])
-with c2:
-    if MOTHER_IMG.exists():
-        st.markdown('<div class="photo-frame" style="text-align:center;">', unsafe_allow_html=True)
-        st.image(str(MOTHER_IMG), width=230)
-        st.markdown("</div>", unsafe_allow_html=True)
+if MOTHER_IMG.exists():
+    import base64
+    _img_b64 = base64.b64encode(MOTHER_IMG.read_bytes()).decode()
+    st.markdown(
+        f'<div class="photo-frame photo-hero" style="text-align:center;">'
+        f'<img src="data:image/jpeg;base64,{_img_b64}" width="230" alt=""/></div>',
+        unsafe_allow_html=True,
+    )
 
 st.markdown(
     f"""
@@ -598,32 +616,3 @@ sel_juz = st.selectbox(
     label_visibility="collapsed",
 )
 st.markdown(f'<div class="mushaf">{render_juz_html(sel_juz)}</div>', unsafe_allow_html=True)
-
-# ----------------------------------------------------------------------------
-# Admin (sidebar)
-# ----------------------------------------------------------------------------
-with st.sidebar:
-    st.markdown("### ⚙️ الإدارة")
-    if ADMIN_PASSWORD:
-        pw = st.text_input("كلمة السر", type="password")
-        if pw == ADMIN_PASSWORD:
-            st.success("مرحبًا بك")
-            cancel = st.multiselect(
-                "إلغاء قراءات جارية",
-                options=[r["id"] for r in active_rows],
-                format_func=lambda rid: next(
-                    f"الجزء {ar_num(r['juz'])} — {r['reader_name']}" for r in active_rows if r["id"] == rid
-                ),
-            )
-            if st.button("إلغاء المحدد") and cancel:
-                delete_readings(cancel)
-                st.rerun()
-            st.divider()
-            confirm = st.checkbox("أؤكد حذف كل السجلات نهائيًا")
-            if st.button("🗑️ تصفير كل شيء") and confirm:
-                reset_all()
-                st.rerun()
-    else:
-        st.caption("أضف ADMIN_PASSWORD في الإعدادات لتفعيل لوحة الإدارة")
-    st.divider()
-    st.caption("قاعدة البيانات: " + ("سحابية دائمة ☁️" if USING_SUPABASE else "محلية للتجربة فقط 💻"))

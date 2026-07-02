@@ -27,7 +27,7 @@ def get_secret(key, default=""):
         return default
 
 
-MOTHER_NAME = get_secret("MOTHER_NAME", "الحاجة رضا سعد على")
+MOTHER_NAME = get_secret("MOTHER_NAME", "أمي")
 ADMIN_PASSWORD = get_secret("ADMIN_PASSWORD", "")
 
 JUZ_NAMES = [
@@ -366,12 +366,27 @@ st.markdown(
 # ----------------------------------------------------------------------------
 # Yasin audio
 # ----------------------------------------------------------------------------
-if YASIN_MP3.exists():
-    st.markdown('<div class="section-title">🎧 سورة يس</div>', unsafe_allow_html=True)
-    # autoplay=True + loop=False: يبدأ تلقائيًا عند فتح الصفحة ويُقرأ مرة واحدة فقط.
-    # عناصر Streamlit لا يُعاد تشغيلها عند تفاعل المستخدم مع الصفحة، فلا تتكرر التلاوة.
-    st.audio(str(YASIN_MP3), format="audio/mp3", loop=False, autoplay=True)
-    st.caption("تبدأ التلاوة تلقائيًا — إن أوقفها متصفحك فاضغط ▶ للاستماع")
+# ----------------------------------------------------------------------------
+# Yasin — hidden background audio, plays once on page load
+# (served via Streamlit static serving so the page stays lightweight)
+# ----------------------------------------------------------------------------
+def _ensure_static_audio():
+    static_dst = APP_DIR / "static" / "yasin.mp3"
+    if static_dst.exists():
+        return True
+    if YASIN_MP3.exists():
+        static_dst.parent.mkdir(exist_ok=True)
+        import shutil
+        shutil.copy(YASIN_MP3, static_dst)
+        return True
+    return False
+
+
+if _ensure_static_audio():
+    st.markdown(
+        '<audio autoplay preload="auto" src="./app/static/yasin.mp3" style="display:none"></audio>',
+        unsafe_allow_html=True,
+    )
 
 # ----------------------------------------------------------------------------
 # Compute state from readings log
